@@ -2,16 +2,24 @@
 
 namespace TntSearch\Controller;
 
+use Propel\Runtime\ActiveQuery\Criteria;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use Thelia\Controller\Admin\BaseAdminController;
 use Thelia\Core\HttpFoundation\Request;
+use Thelia\Domain\Search\Document\SearchQuery;
+use Thelia\Domain\Search\SearchService;
+use Thelia\Model\BrandI18nQuery;
 use Thelia\Model\BrandQuery;
+use Thelia\Model\CategoryI18nQuery;
 use Thelia\Model\CategoryQuery;
+use Thelia\Model\ContentI18nQuery;
 use Thelia\Model\ContentQuery;
 use Thelia\Model\CustomerQuery;
+use Thelia\Model\FolderI18nQuery;
 use Thelia\Model\FolderQuery;
 use Thelia\Model\OrderQuery;
+use Thelia\Model\ProductI18nQuery;
 use Thelia\Model\ProductQuery;
 use Twig\Environment;
 use TntSearch\Service\Provider\IndexationProvider;
@@ -20,6 +28,10 @@ use TntSearch\Service\Search;
 #[Route("/admin/search", name: "front_search_")]
 class SearchController extends BaseAdminController
 {
+    private const array CATALOGUE_FAMILIES = ['product', 'category', 'content', 'folder', 'brand'];
+
+    private const int ROWS = 25;
+
     public function __construct(private readonly Environment $twig)
     {
     }
@@ -28,7 +40,8 @@ class SearchController extends BaseAdminController
     public function searchAdminAction(
         Request $request,
         Search $searchService,
-        IndexationProvider $indexationProvider
+        IndexationProvider $indexationProvider,
+        SearchService $catalogueSearch,
     ): Response {
         $searchTerm = (string) $request->query->get('search_term', '');
         $locale = $request->hasSession()
@@ -45,6 +58,11 @@ class SearchController extends BaseAdminController
                 $ids = array_map(static fn ($hit) => $hit['id'] ?? $hit, $hits);
                 $idsByType[strtolower((string) $type)] = array_values(array_filter($ids));
             }
+
+            foreach (self::CATALOGUE_FAMILIES as $family) {
+                $result = $catalogueSearch->search(new SearchQuery($searchTerm, $locale, [$family], visibleOnly: false, limit: self::ROWS));
+                $idsByType[$family] = null === $result ? $this->titleMatches($family, $searchTerm, $locale) : $result->idsOf($family);
+            }
         }
 
         return new Response(
@@ -59,6 +77,31 @@ class SearchController extends BaseAdminController
                 'brands' => $this->loadBrands($idsByType['brand'] ?? [], $locale),
             ])
         );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function titleMatches(string $family, string $term, string $locale): array
+    {
+        $query = match ($family) {
+            'product' => ProductI18nQuery::create(),
+            'category' => CategoryI18nQuery::create(),
+            'content' => ContentI18nQuery::create(),
+            'folder' => FolderI18nQuery::create(),
+            'brand' => BrandI18nQuery::create(),
+        };
+
+        /** @var list<int|string> $ids */
+        $ids = $query
+            ->filterByLocale($locale)
+            ->filterByTitle('%'.addcslashes($term, '%_\\').'%', Criteria::LIKE)
+            ->limit(self::ROWS)
+            ->select(['Id'])
+            ->find()
+            ->getData();
+
+        return array_map(intval(...), $ids);
     }
 
     private function loadCustomers(array $ids): array
