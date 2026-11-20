@@ -16,7 +16,7 @@ Les synonymes et les redirections de recherche sont ceux du cœur, gérés dans 
 
 ## Prérequis
 
-- Thelia 3.4 ou plus récent.
+- Thelia 3.5 ou plus récent.
 - Extension PHP `pdo_sqlite`.
 - Un dossier `local/TNTIndexes/<APP_ENV>/` accessible en écriture par PHP, **sur un disque local**. SQLite (journal WAL) et les verrous `flock` du module ne sont pas fiables sur un partage réseau (NFS, SMB, volume partagé d'un cluster) : ne pas y placer ce dossier.
 - Un seul serveur web, avec ses workers sur la même machine. Sur plusieurs serveurs, chacun aurait ses propres index, et une écriture ne mettrait à jour que ceux du serveur qui la traite : brancher alors un moteur à serveur (adaptateur du contrat du cœur).
