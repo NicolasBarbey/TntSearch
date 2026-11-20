@@ -289,6 +289,22 @@ final class TntSearchEngineTest extends IntegrationTestCase
         self::assertFalse($engine->isAvailable());
     }
 
+    public function testRemovingTheIndexesKeepsTheLockFilesAWriterMayHold(): void
+    {
+        $indexes = self::indexes(self::ENVIRONMENT);
+        $engine = self::engine(self::ENVIRONMENT, [], $indexes);
+        $engine->index([self::product(4, 'Lampe Scarlett')]);
+        $indexes->markComplete('product', 'fr_FR');
+        $lock = $indexes->storage().'document--product.lock';
+        self::assertFileExists($lock);
+
+        TntSearch::removeDocumentIndexes(self::ENVIRONMENT);
+
+        self::assertFileExists($lock);
+        self::assertFileDoesNotExist($indexes->storage().$indexes->fileName('product', 'fr_FR'));
+        self::assertFalse($indexes->isComplete('product', 'fr_FR'));
+    }
+
     public function testAnIndexDeletedAfterItWasMarkedCompleteLeavesItsLocaleToTheDatabase(): void
     {
         $providers = [self::provider('product', [4])];

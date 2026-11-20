@@ -80,7 +80,7 @@ class TntSearch extends BaseModule
     public static function removeDocumentIndexes(string $environment): void
     {
         foreach (glob(self::INDEXES_DIR.DS.$environment.DS.'document--*') ?: [] as $file) {
-            if (is_file($file)) {
+            if (is_file($file) && !str_ends_with($file, '.lock')) {
                 unlink($file);
             }
         }

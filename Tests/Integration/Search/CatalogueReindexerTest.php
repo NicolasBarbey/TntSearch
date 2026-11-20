@@ -151,7 +151,8 @@ final class CatalogueReindexerTest extends IntegrationTestCase
         $this->memo->reset();
         $this->reindexer('doctrine://default')->queueOnceWhenMissing();
 
-        self::assertSame([], glob(TntSearch::INDEXES_DIR.\DIRECTORY_SEPARATOR.self::ENVIRONMENT.\DIRECTORY_SEPARATOR.'document--*') ?: []);
+        $left = glob(TntSearch::INDEXES_DIR.\DIRECTORY_SEPARATOR.self::ENVIRONMENT.\DIRECTORY_SEPARATOR.'document--*') ?: [];
+        self::assertSame([], array_values(array_filter($left, static fn (string $file): bool => !str_ends_with($file, '.lock'))));
         self::assertFalse($this->engine->isAvailable());
         self::assertNotSame([], $this->dispatched);
     }

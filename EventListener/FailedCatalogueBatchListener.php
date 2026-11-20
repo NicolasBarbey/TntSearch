@@ -6,6 +6,7 @@ namespace TntSearch\EventListener;
 
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
+use Thelia\Command\SearchReindexCommand;
 use Thelia\Domain\Search\Message\IndexDocument;
 use TntSearch\Search\DocumentIndexes;
 use TntSearch\Search\SearchMemo;
@@ -23,7 +24,7 @@ final readonly class FailedCatalogueBatchListener
     {
         $message = $event->getEnvelope()->getMessage();
 
-        if (!$message instanceof IndexDocument || $event->willRetry()) {
+        if (!$message instanceof IndexDocument || $event->willRetry() || SearchReindexCommand::QUEUE_TRANSPORT !== $event->getReceiverName()) {
             return;
         }
 

@@ -99,6 +99,17 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
         self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
     }
 
+    public function testAnEverydayWriteThatFailedForGoodLeavesItsFamilyComplete(): void
+    {
+        $this->indexes->markComplete('brand', 'en_US');
+        $listener = new FailedCatalogueBatchListener($this->indexes, new SearchMemo());
+
+        $listener->forgetTheCompletionOfItsFamily(new WorkerMessageFailedEvent(new Envelope(new IndexDocument('brand', [1])), 'async', new \RuntimeException()));
+
+        self::assertTrue($this->indexes->isComplete('brand', 'en_US'));
+        self::assertFalse($this->indexes->hasFailed('brand'));
+    }
+
     public function testABatchThatFailedDuringTheRebuildKeepsItsFamilyUnmarkedUntilTheNextRebuild(): void
     {
         $listener = new FailedCatalogueBatchListener($this->indexes, new SearchMemo());
