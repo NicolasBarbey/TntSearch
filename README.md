@@ -4,12 +4,12 @@ Moteur de recherche de Thelia 3 fondé sur la bibliothèque [TNTSearch](https://
 
 ## Ce que fait le module
 
-- **Recherche du catalogue** (produits, catégories, contenus, dossiers, marques) pour le service de recherche du cœur, donc pour tout thème qui l'appelle (Flexy compris) et pour l'écran `/admin/search`.
+- **Recherche du catalogue** (produits, catégories, contenus, dossiers, marques) pour le service de recherche du cœur, donc pour tout thème qui l'appelle (Flexy compris).
 - **Tolérance aux fautes** : une lettre d'écart pour un mot de moins de 6 lettres, deux au-delà (« Scralett » trouve « Scarlett », « divan » ne trouve pas « diam »), comptées en caractères, accents et alphabets non latins compris. Un mot trouvé malgré une faute compte moitié moins qu'un mot exact. Une faute dans les deux premières lettres n'est pas corrigée, et seuls les 50 mots les plus fréquents qui commencent par ces deux lettres sont comparés.
 - **Pertinence pondérée** : chaque champ compte proportionnellement au poids que le cœur lui donne (titre 10, référence et chapeau 5, marque 3, autres champs 1).
 - **Autocomplétion** : le dernier mot tapé trouve aussi les mots qui commencent par lui (« chau » trouve « chaussures »), avec un score réduit.
 - **Racinisation et mots vides** par langue (français, italien, allemand, portugais, russe ; anglais par défaut).
-- **Recherche des clients et des commandes** dans `/admin/search`, par des index propres au module.
+- **Index des clients et des commandes**, propres au module et lus par son service public `tntsearch.search`. Aucun écran du back-office ne les interroge : la recherche du back-office (`/admin/search`) est celle du thème, qui cherche en base sans passer par le module.
 - **Journal des recherches** dans la table `tnt_search_log`, lu par le back-office.
 
 Les synonymes et les redirections de recherche sont ceux du cœur, gérés dans leurs écrans du back-office et appliqués avant d'interroger le moteur.
@@ -28,6 +28,7 @@ Le dossier `local/TNTIndexes/` contient le texte indexé du catalogue, y compris
 - Le dossier est hors de la racine web (`public/`) : ne jamais l'y déplacer, ni le rendre accessible par un alias du serveur web.
 - Droits limités à l'utilisateur de PHP (`chmod 700` sur le dossier).
 - L'exclure des sauvegardes qui sortent de l'hébergement, ou les chiffrer : il se reconstruit par `tntsearch:indexes`.
+- La page `/admin/search_log` du module exige le droit de voir les commandes (`admin.order`), comme le rapport des recherches du thème.
 - À la suppression du module avec ses données, les index de documents sont effacés ; supprimer aussi `local/TNTIndexes/` pour les index des clients et des commandes.
 
 ## Installation
@@ -56,7 +57,7 @@ php bin/console tntsearch:status
 
 Affiche le dossier des index, le moteur qui répond au cœur, puis pour chaque famille et chaque langue le nombre de documents et la date de la dernière écriture. La commande sort en erreur tant qu'aucun index du catalogue n'existe.
 
-Le moteur ne répond qu'une fois chaque famille du catalogue qui a des éléments reconstruite **jusqu'au bout** dans chaque langue indexée : la fin de `thelia:search:reindex` (ou, avec `--queue`, un dernier message passé après les lots), de `tntsearch:indexes` ou d'une reconstruction mise en file par le module pose un marqueur `document--<famille>--<langue>.complete` à côté des index. Une purge l'efface, une langue ajoutée n'en a pas encore. Avec `--queue`, le marqueur attend que la file `async_heavy` soit vide (il repasse toutes les 30 s, une heure au plus, puis renonce et la base répond) ; un lot qui échoue pour de bon efface le marqueur de sa famille. Chaque activation du module supprime ses index de documents, qui sont reconstruits comme à la première activation : un index d'avant la désactivation n'est jamais servi. La suppression du module avec ses données les supprime aussi. D'ici là, ou si SQLite manque, le cœur fait répondre la base : la boutique reste utilisable, sans tolérance aux fautes. Pendant une requête, une même recherche n'est faite qu'une fois : les pages suivantes la relisent jusqu'à la prochaine écriture d'index. Un index illisible coupe le moteur 30 s pour toute la boutique, et la base répond pendant ce temps. Un index seulement occupé par une écriture (SQLite « database is locked » après 250 ms) ne fait échouer que la recherche en cours, qui retombe sur la base, sans couper le moteur. Une écriture attend au plus 10 s le verrou de sa famille, puis échoue (le message est rejoué par la file). Un catalogue mis en file par le module et toujours absent 6 h plus tard est remis en file à la requête suivante du back-office. Une recherche dans une langue que le cœur n'indexe pas (inactive ou exclue par `search_exclude_locales`) est faite par la base.
+Le moteur ne répond dans une langue qu'une fois chaque famille du catalogue qui a des éléments reconstruite **jusqu'au bout** dans cette langue : la fin de `thelia:search:reindex` (ou, avec `--queue`, un dernier message passé après les lots), de `tntsearch:indexes` ou d'une reconstruction mise en file par le module pose un marqueur `document--<famille>--<langue>.complete` à côté des index. Une purge l'efface. Une langue ajoutée n'en a pas encore : la base répond dans cette langue seule, le moteur continue de répondre dans les autres, et la requête suivante du back-office remet le catalogue en file (au plus une fois toutes les 6 h). Avec `--queue`, le marqueur attend que la file `async_heavy` soit vide (il repasse toutes les 30 s, une heure au plus, puis renonce et la base répond) ; un lot qui échoue pour de bon efface le marqueur de sa famille et laisse une trace `document--<famille>.failed` : le marqueur n'est plus reposé pour cette famille (avertissement au journal) jusqu'au début de la reconstruction suivante (`thelia:search:reindex`, `tntsearch:indexes` ou mise en file par le module), qui efface la trace. Chaque activation du module supprime ses index de documents, qui sont reconstruits comme à la première activation : un index d'avant la désactivation n'est jamais servi. La suppression du module avec ses données les supprime aussi. D'ici là, ou si SQLite manque, le cœur fait répondre la base : la boutique reste utilisable, sans tolérance aux fautes. Pendant une requête, une même recherche n'est faite qu'une fois : les pages suivantes la relisent jusqu'à la prochaine écriture d'index. Un index illisible coupe le moteur 30 s pour toute la boutique, et la base répond pendant ce temps. Un index seulement occupé par une écriture (SQLite « database is locked » après 250 ms) ne fait échouer que la recherche en cours, qui retombe sur la base, sans couper le moteur. Une écriture attend au plus 10 s le verrou de sa famille, puis échoue (le message est rejoué par la file). Un catalogue mis en file par le module et toujours absent 6 h plus tard est remis en file à la requête suivante du back-office. Une recherche dans une langue que le cœur n'indexe pas (inactive ou exclue par `search_exclude_locales`) est faite par la base.
 
 ## Monter de version vers 5.0.0
 
@@ -66,7 +67,8 @@ La 5.0.0 remplace la recherche propre au module par le contrat du cœur.
 - Les groupes de synonymes du module sont copiés dans le dictionnaire du cœur, dans chaque langue active, en synonymes réciproques. Un terme que le dictionnaire du cœur connaît déjà est laissé tel quel. La table `tnt_synonym` est conservée mais n'est plus lue, et l'écran des synonymes du module disparaît.
 - Le module ne déclare plus de moteur de recherche propre à Flexy : Flexy passe par le service de recherche du cœur.
 - `WeightEvent` et `ExtendQueryEvent` ne s'appliquent plus qu'aux index des clients et des commandes. Les poids du catalogue se règlent dans les fournisseurs de documents du cœur.
-- Les anciens synonymes ne s'appliquent plus à la recherche des commandes du back-office : seuls ceux du cœur existent, et ils ne concernent que le catalogue.
+- Les anciens synonymes ne s'appliquent plus aux index des clients et des commandes : seuls ceux du cœur existent, et ils ne concernent que le catalogue.
+- Le module ne fournit plus de page `/admin/search` : c'est celle du thème du back-office qui répond.
 
 ## Tests
 
