@@ -8,6 +8,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
 use Thelia\Controller\Admin\BaseAdminController;
 use Thelia\Core\HttpFoundation\Request;
+use Thelia\Log\Tlog;
 use Thelia\Tools\TokenProvider;
 use Thelia\Tools\URL;
 use TntSearch\Search\CatalogueReindexer;
@@ -27,9 +28,9 @@ class IndexationController extends BaseAdminController
             $indexationProvider->indexAll();
             $catalogueReindexer->rebuild();
         } catch (\Exception $exception) {
-            $error = $exception->getMessage();
+            Tlog::getInstance()->addError('TntSearch: the indexes could not be rebuilt from the back-office: '.$exception->getMessage());
 
-            return $this->generateRedirect(URL::getInstance()->absoluteUrl('/admin/module/TntSearch', ['error' => $error]));
+            return $this->generateRedirect(URL::getInstance()->absoluteUrl('/admin/module/TntSearch', ['error' => 1]));
         }
 
         return $this->generateRedirect(URL::getInstance()->absoluteUrl('/admin/module/TntSearch', ['success' => true]));
