@@ -289,6 +289,38 @@ final class TntSearchEngineTest extends IntegrationTestCase
         self::assertFalse($engine->isAvailable());
     }
 
+    public function testAnIndexDeletedAfterItWasMarkedCompleteLeavesItsLocaleToTheDatabase(): void
+    {
+        $providers = [self::provider('product', [4])];
+        $memo = new SearchMemo();
+        $indexes = self::indexes(self::ENVIRONMENT);
+        $engine = self::engine(self::ENVIRONMENT, $providers, $indexes, $memo);
+        $completion = new CatalogueCompletion(new SearchDocumentProviders($providers), new SearchLocales(), $indexes, $memo);
+
+        $engine->index([self::product(4, 'Lampe Scarlett')]);
+        $completion->mark();
+        self::assertSame([], $engine->search(new SearchQuery('lampe', 'en_US'))->hits);
+
+        unlink($indexes->storage().$indexes->fileName('product', 'fr_FR'));
+        $memo->reset();
+
+        try {
+            $engine->search(self::query('lampe'));
+            self::fail('A locale whose index file is gone must leave the search to the database.');
+        } catch (IncompleteLocaleException $exception) {
+            self::assertSame('fr_FR', $exception->locale);
+        }
+
+        self::assertSame([], $engine->search(new SearchQuery('lampe', 'en_US'))->hits);
+
+        $engine->index([self::product(5, 'Lamp Owen', locale: 'en_US')]);
+        unlink($indexes->storage().$indexes->fileName('product', 'en_US'));
+        $memo->reset();
+
+        $this->expectException(IncompleteLocaleException::class);
+        $engine->search(new SearchQuery('lamp', 'en_US'));
+    }
+
     public function testABusyIndexFailsOneSearchWithoutStoppingTheEngine(): void
     {
         $outage = new EngineOutage(new ArrayAdapter());

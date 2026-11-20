@@ -33,6 +33,7 @@ class DocumentIndexes implements ResetInterface
     private const string EXTENSION = '.index';
 
     private const string COMPLETE = '.complete';
+    private const string EMPTY_LOCALE = 'empty';
 
     private const string FAILED = '.failed';
 
@@ -69,8 +70,16 @@ class DocumentIndexes implements ResetInterface
         $engine->loadConfig($this->config($locale));
         $engine->disableOutput(true);
 
+        $existed = is_file($this->storage().$this->fileName($family, $locale));
+
         if (!$engine->open($this->fileName($family, $locale), $create)) {
             return null;
+        }
+
+        $marker = $this->storage().$this->markerName($family, $locale);
+
+        if (!$existed && is_file($marker) && self::EMPTY_LOCALE === file_get_contents($marker)) {
+            $this->writeMarker($marker, '');
         }
 
         $engine->waitAtMost(self::WRITE_TIMEOUT_MILLISECONDS);
@@ -161,12 +170,33 @@ class DocumentIndexes implements ResetInterface
 
     public function markComplete(string $family, ?string $locale): void
     {
-        touch($this->storage().$this->markerName($family, $locale));
+        $this->exclusively($family, function () use ($family, $locale): void {
+            $holdsDocuments = is_file($this->storage().$this->fileName($family, $locale));
+
+            $this->writeMarker($this->storage().$this->markerName($family, $locale), $holdsDocuments ? '' : self::EMPTY_LOCALE);
+        });
+    }
+
+    private function writeMarker(string $marker, string $content): void
+    {
+        $temporary = $marker.'.'.bin2hex(random_bytes(4));
+
+        if (false === file_put_contents($temporary, $content) || !rename($temporary, $marker)) {
+            @unlink($temporary);
+
+            throw new \RuntimeException(\sprintf('The search index marker %s cannot be written.', basename($marker)));
+        }
     }
 
     public function isComplete(string $family, ?string $locale): bool
     {
-        return is_file($this->storage().$this->markerName($family, $locale));
+        $marker = $this->storage().$this->markerName($family, $locale);
+
+        if (!is_file($marker)) {
+            return false;
+        }
+
+        return is_file($this->storage().$this->fileName($family, $locale)) || self::EMPTY_LOCALE === file_get_contents($marker);
     }
 
     public function forgetCompletion(string $family): void
