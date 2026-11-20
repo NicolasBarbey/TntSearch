@@ -19,6 +19,7 @@ use Thelia\Test\IntegrationTestCase;
 use TntSearch\Search\CatalogueCompletion;
 use TntSearch\Search\DocumentIndexes;
 use TntSearch\Search\EngineOutage;
+use TntSearch\Search\IncompleteLocaleException;
 use TntSearch\Search\SearchMemo;
 use TntSearch\Search\TermScorer;
 use TntSearch\Search\TntSearchEngine;
@@ -213,7 +214,7 @@ final class TntSearchEngineTest extends IntegrationTestCase
         $this->engine->purge('../product');
     }
 
-    public function testTheEngineIsUnavailableUntilEveryFamilyHoldingEntitiesIsMarkedCompleteInEveryLocale(): void
+    public function testALocaleIsSearchedOnceEveryFamilyHoldingEntitiesIsMarkedCompleteInIt(): void
     {
         $providers = [self::provider('category', [8]), self::provider('brand', [])];
         $memo = new SearchMemo();
@@ -224,10 +225,20 @@ final class TntSearchEngineTest extends IntegrationTestCase
         self::assertFalse($engine->isAvailable());
 
         $completion->mark(['category'], ['fr_FR']);
-        self::assertFalse($engine->isAvailable());
+        self::assertTrue($engine->isAvailable());
+        self::assertFalse($engine->isCompleteInEveryIndexedLocale());
+        self::assertSame([8], self::ids($engine->search(new SearchQuery('lampes', 'fr_FR'))->hits));
+
+        try {
+            $engine->search(new SearchQuery('lampes', 'en_US'));
+            self::fail('A locale not indexed to the end must leave the search to the database.');
+        } catch (IncompleteLocaleException $exception) {
+            self::assertSame('en_US', $exception->locale);
+        }
 
         $completion->mark();
-        self::assertTrue($engine->isAvailable());
+        self::assertTrue($engine->isCompleteInEveryIndexedLocale());
+        self::assertSame([], $engine->search(new SearchQuery('lampes', 'en_US'))->hits);
 
         $engine->purge('category');
         self::assertFalse($engine->isAvailable());

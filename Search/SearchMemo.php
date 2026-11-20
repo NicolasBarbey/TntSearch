@@ -13,6 +13,9 @@ final class SearchMemo implements ResetInterface
 
     private ?bool $available = null;
 
+    /** @var array<string, bool> */
+    private array $completeLocales = [];
+
     /** @var array<string, float> */
     private array $hits = [];
 
@@ -41,8 +44,17 @@ final class SearchMemo implements ResetInterface
         return $this->available ??= $check();
     }
 
+    /**
+     * @param callable(): bool $check
+     */
+    public function completeness(string $key, callable $check): bool
+    {
+        return $this->completeLocales[$key] ??= $check();
+    }
+
     public function reset(): void
     {
+        $this->completeLocales = [];
         $this->key = null;
         $this->hits = [];
         $this->available = null;

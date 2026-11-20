@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace TntSearch\Tests\Integration\Search;
 
-use Psr\Log\NullLogger;
+use Psr\Log\AbstractLogger;
 use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Messenger\Envelope;
@@ -36,12 +36,16 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
     /** @var list<Envelope> */
     private array $dispatched = [];
 
+    /** @var list<string> */
+    private array $warnings = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         (new Filesystem())->remove(TntSearch::INDEXES_DIR.\DIRECTORY_SEPARATOR.self::ENVIRONMENT);
         $this->indexes = TntSearchEngineTest::indexes(self::ENVIRONMENT);
         $this->dispatched = [];
+        $this->warnings = [];
     }
 
     protected function tearDown(): void
@@ -95,6 +99,27 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
         self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
     }
 
+    public function testABatchThatFailedDuringTheRebuildKeepsItsFamilyUnmarkedUntilTheNextRebuild(): void
+    {
+        $listener = new FailedCatalogueBatchListener($this->indexes, new SearchMemo());
+        $listener->forgetTheCompletionOfItsFamily(new WorkerMessageFailedEvent(new Envelope(new IndexDocument('brand', [1])), SearchReindexCommand::QUEUE_TRANSPORT, new \RuntimeException()));
+
+        $this->handler(waitingMessages: 0)(new MarkCatalogueIndexed(['brand'], ['en_US']));
+
+        self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
+        self::assertCount(1, $this->warnings);
+
+        $this->completion()->startRebuild();
+        $this->handler(waitingMessages: 0)(new MarkCatalogueIndexed(['brand'], ['en_US']));
+
+        self::assertTrue($this->indexes->isComplete('brand', 'en_US'));
+    }
+
+    private function completion(): CatalogueCompletion
+    {
+        return new CatalogueCompletion(new SearchDocumentProviders([new BrandDocumentProvider()]), new SearchLocales(), $this->indexes, new SearchMemo());
+    }
+
     private function handler(int $waitingMessages): MarkCatalogueIndexedHandler
     {
         $dispatched = &$this->dispatched;
@@ -122,8 +147,10 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
             }
         };
 
+        $warnings = &$this->warnings;
+
         return new MarkCatalogueIndexedHandler(
-            new CatalogueCompletion(new SearchDocumentProviders([new BrandDocumentProvider()]), new SearchLocales(), $this->indexes, new SearchMemo()),
+            $this->completion(),
             new class($dispatched) implements MessageBusInterface {
                 /** @param list<Envelope> $dispatched */
                 public function __construct(private array &$dispatched)
@@ -139,7 +166,17 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
                 }
             },
             new ServiceLocator([SearchReindexCommand::QUEUE_TRANSPORT => static fn () => $receiver]),
-            new NullLogger(),
+            new class($warnings) extends AbstractLogger {
+                /** @param list<string> $warnings */
+                public function __construct(private array &$warnings)
+                {
+                }
+
+                public function log($level, \Stringable|string $message, array $context = []): void
+                {
+                    $this->warnings[] = (string) $message;
+                }
+            },
         );
     }
 }

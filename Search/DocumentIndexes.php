@@ -34,6 +34,8 @@ class DocumentIndexes implements ResetInterface
 
     private const string COMPLETE = '.complete';
 
+    private const string FAILED = '.failed';
+
     public const int LOCK_WAIT_MILLISECONDS = 10_000;
 
     private const int LOCK_RETRY_MICROSECONDS = 20_000;
@@ -174,6 +176,30 @@ class DocumentIndexes implements ResetInterface
         foreach (glob($this->storage().self::PREFIX.$family.self::SEPARATOR.'*'.self::COMPLETE) ?: [] as $marker) {
             unlink($marker);
         }
+    }
+
+    public function recordFailure(string $family): void
+    {
+        touch($this->failureMarker($family));
+    }
+
+    public function hasFailed(string $family): bool
+    {
+        return is_file($this->failureMarker($family));
+    }
+
+    public function forgetFailure(string $family): void
+    {
+        if (is_file($this->failureMarker($family))) {
+            unlink($this->failureMarker($family));
+        }
+    }
+
+    private function failureMarker(string $family): string
+    {
+        self::assertSafe($family, null);
+
+        return $this->storage().self::PREFIX.$family.self::FAILED;
     }
 
     public function remove(string $file): void

@@ -35,7 +35,11 @@ final readonly class MarkCatalogueIndexedHandler
     public function __invoke(MarkCatalogueIndexed $message): void
     {
         if (!$this->batchesAreWaiting()) {
-            $this->completion->mark($message->families, $message->locales);
+            $failed = $this->completion->mark($message->families, $message->locales);
+
+            if ([] !== $failed) {
+                $this->logger->warning('TntSearch: a batch of {families} failed during the rebuild, their index is not marked complete and the database answers their searches; run thelia:search:reindex.', ['families' => implode(', ', $failed)]);
+            }
 
             return;
         }

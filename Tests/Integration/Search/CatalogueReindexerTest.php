@@ -156,6 +156,30 @@ final class CatalogueReindexerTest extends IntegrationTestCase
         self::assertNotSame([], $this->dispatched);
     }
 
+    public function testALanguageWithoutItsIndexIsQueuedWhileTheOtherLanguagesKeepTheEngine(): void
+    {
+        $this->reindexer('doctrine://default')->rebuild();
+        $this->dispatched = [];
+        $locales = (new SearchLocales())->indexed();
+        self::assertGreaterThan(1, \count($locales));
+        unlink(TntSearch::INDEXES_DIR.\DIRECTORY_SEPARATOR.self::ENVIRONMENT.\DIRECTORY_SEPARATOR.'document--product--'.$locales[1].'.complete');
+        $this->memo->reset();
+
+        $this->reindexer('doctrine://default')->queueOnceWhenMissing();
+
+        self::assertTrue($this->engine->isAvailable());
+        self::assertNotSame([], $this->dispatched);
+    }
+
+    public function testARebuildLiftsTheFailureLeftByAnEarlierOne(): void
+    {
+        TntSearchEngineTest::indexes(self::ENVIRONMENT)->recordFailure('product');
+
+        $this->reindexer('doctrine://default')->rebuild();
+
+        self::assertTrue($this->engine->isAvailable());
+    }
+
     private function reindexer(string $dsn): CatalogueReindexer
     {
         $providers = new SearchDocumentProviders([new ProductDocumentProvider()]);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace TntSearch\Search;
 
 use TeamTNT\TNTSearch\Exceptions\IndexNotFoundException;
+use Thelia\Domain\Search\Contract\SearchableDocumentProviderInterface;
 use Thelia\Domain\Search\Contract\SearchEngineInterface;
 use Thelia\Domain\Search\Document\SearchDocument;
 use Thelia\Domain\Search\Document\SearchHit;
@@ -36,26 +37,94 @@ final readonly class TntSearchEngine implements SearchEngineInterface
             return false;
         }
 
-        return $this->memo->availability($this->everyFamilyIsComplete(...));
+        return $this->memo->availability($this->someLocaleIsComplete(...));
     }
 
-    private function everyFamilyIsComplete(): bool
+    public function isCompleteInEveryIndexedLocale(): bool
     {
-        foreach ($this->providers->families() as $family) {
+        $providers = $this->providersHoldingEntities([]);
+
+        foreach ($this->locales->indexed() as $locale) {
+            if (!$this->isCompleteIn($locale, $providers)) {
+                return false;
+            }
+        }
+
+        return $this->isCompleteIn(null, $providers);
+    }
+
+    private function someLocaleIsComplete(): bool
+    {
+        $providers = $this->providersHoldingEntities([]);
+        $locales = $this->locales->indexed();
+
+        if ([] === $locales) {
+            return $this->isCompleteIn(null, $providers);
+        }
+
+        foreach ($locales as $locale) {
+            if ($this->isCompleteIn($locale, $providers)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<string> $families
+     *
+     * @return list<SearchableDocumentProviderInterface>
+     */
+    private function providersHoldingEntities(array $families): array
+    {
+        $providers = [];
+
+        foreach ([] === $families ? $this->providers->families() : $families as $family) {
             $provider = $this->providers->get($family);
 
-            if (null === $provider || [] === $provider->idsAfter(0, 1)) {
+            if (null !== $provider && [] !== $provider->idsAfter(0, 1)) {
+                $providers[] = $provider;
+            }
+        }
+
+        return $providers;
+    }
+
+    /**
+     * @param list<SearchableDocumentProviderInterface> $providers
+     */
+    private function isCompleteIn(?string $locale, array $providers): bool
+    {
+        foreach ($providers as $provider) {
+            if ($provider->isTranslatable() && null === $locale) {
                 continue;
             }
 
-            foreach ($provider->isTranslatable() ? $this->locales->indexed() : [null] as $locale) {
-                if (!$this->indexes->isComplete($family, $locale)) {
-                    return false;
-                }
+            if (!$this->indexes->isComplete($provider->family(), $provider->isTranslatable() ? $locale : null)) {
+                return false;
             }
         }
 
         return true;
+    }
+
+    private function assertCompleteIn(SearchQuery $query): void
+    {
+        if (null === $query->locale) {
+            return;
+        }
+
+        $families = $query->families;
+        sort($families);
+        $complete = $this->memo->completeness(
+            $query->locale.'|'.implode(',', $families),
+            fn (): bool => $this->isCompleteIn($query->locale, $this->providersHoldingEntities($families)),
+        );
+
+        if (!$complete) {
+            throw new IncompleteLocaleException($query->locale);
+        }
     }
 
     public function index(array $documents): void
@@ -116,6 +185,7 @@ final readonly class TntSearchEngine implements SearchEngineInterface
 
     public function search(SearchQuery $query): SearchResult
     {
+        $this->assertCompleteIn($query);
         $ranked = $this->memo->hitsOf($query, fn (): array => $this->ranked($query));
         $hits = [];
 

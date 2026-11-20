@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace TntSearch\Tests\Integration\Search;
 
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\Console\Event\ConsoleTerminateEvent;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Input\InputDefinition;
@@ -73,6 +74,20 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
         self::assertSame(['async_heavy'], $this->dispatched[0]->last(TransportNamesStamp::class)?->getTransportNames());
     }
 
+    public function testAReindexThatStartsLiftsTheFailureOfItsFamiliesSoItsEndCanMarkThem(): void
+    {
+        $this->indexes->recordFailure('category');
+
+        $this->listener()->onReindexEnd($this->terminate(['--family' => ['category'], '--locale' => ['fr_FR']], Command::SUCCESS));
+        self::assertFalse($this->indexes->isComplete('category', 'fr_FR'));
+
+        $this->listener()->onReindexStart(new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input(['--family' => ['category', '../unknown']]), new NullOutput()));
+        $this->listener()->onReindexEnd($this->terminate(['--family' => ['category'], '--locale' => ['fr_FR']], Command::SUCCESS));
+
+        self::assertFalse($this->indexes->hasFailed('category'));
+        self::assertTrue($this->indexes->isComplete('category', 'fr_FR'));
+    }
+
     private function listener(): ReindexCompletionListener
     {
         $dispatched = &$this->dispatched;
@@ -101,12 +116,20 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
      */
     private function terminate(array $options, int $exitCode): ConsoleTerminateEvent
     {
+        return new ConsoleTerminateEvent(new Command('thelia:search:reindex'), $this->input($options), new NullOutput(), $exitCode);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function input(array $options): ArrayInput
+    {
         $definition = new InputDefinition([
             new InputOption('family', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY),
             new InputOption('locale', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY),
             new InputOption('queue', null, InputOption::VALUE_NONE),
         ]);
 
-        return new ConsoleTerminateEvent(new Command('thelia:search:reindex'), new ArrayInput($options, $definition), new NullOutput(), $exitCode);
+        return new ArrayInput($options, $definition);
     }
 }

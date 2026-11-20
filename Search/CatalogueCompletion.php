@@ -20,13 +20,23 @@ final readonly class CatalogueCompletion
     /**
      * @param list<string>      $families
      * @param list<string>|null $locales
+     *
+     * @return list<string> the families left unmarked because a batch of theirs failed since their last rebuild started
      */
-    public function mark(array $families = [], ?array $locales = null): void
+    public function mark(array $families = [], ?array $locales = null): array
     {
+        $failed = [];
+
         foreach ([] === $families ? $this->providers->families() : $families as $family) {
             $provider = $this->providers->get($family);
 
             if (null === $provider) {
+                continue;
+            }
+
+            if ($this->indexes->hasFailed($family)) {
+                $failed[] = $family;
+
                 continue;
             }
 
@@ -36,6 +46,20 @@ final readonly class CatalogueCompletion
         }
 
         $this->memo->reset();
+
+        return $failed;
+    }
+
+    /**
+     * @param list<string> $families
+     */
+    public function startRebuild(array $families = []): void
+    {
+        foreach ([] === $families ? $this->providers->families() : $families as $family) {
+            if (null !== $this->providers->get($family)) {
+                $this->indexes->forgetFailure($family);
+            }
+        }
     }
 
     public function isEveryFamilyMarked(): bool

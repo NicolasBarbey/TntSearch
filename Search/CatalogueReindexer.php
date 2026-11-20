@@ -43,6 +43,8 @@ readonly class CatalogueReindexer
 
     public function rebuild(): void
     {
+        $this->completion->startRebuild();
+
         foreach ($this->batches() as [$family, $ids]) {
             $this->indexer->synchronize($family, $ids);
         }
@@ -52,7 +54,7 @@ readonly class CatalogueReindexer
 
     public function queueOnceWhenMissing(): void
     {
-        if ($this->completion->isEveryFamilyMarked() || $this->engine->isAvailable()) {
+        if ($this->completion->isEveryFamilyMarked() || $this->engine->isCompleteInEveryIndexedLocale()) {
             return;
         }
 
@@ -73,6 +75,8 @@ readonly class CatalogueReindexer
 
                 return;
             }
+
+            $this->completion->startRebuild();
 
             foreach ($this->batches() as [$family, $ids]) {
                 $this->bus->dispatch(new Envelope(new IndexDocument($family, $ids), [new TransportNamesStamp([SearchReindexCommand::QUEUE_TRANSPORT])]));

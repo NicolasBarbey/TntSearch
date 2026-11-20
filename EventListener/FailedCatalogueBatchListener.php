@@ -27,6 +27,7 @@ final readonly class FailedCatalogueBatchListener
             return;
         }
 
+        $this->indexes->recordFailure($message->family);
         $this->indexes->forgetCompletion($message->family);
         $this->memo->reset();
     }

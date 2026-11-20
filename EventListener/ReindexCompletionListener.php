@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace TntSearch\EventListener;
 
 use Symfony\Component\Console\ConsoleEvents;
+use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\Console\Event\ConsoleTerminateEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Messenger\Envelope;
@@ -26,7 +27,21 @@ final readonly class ReindexCompletionListener implements EventSubscriberInterfa
 
     public static function getSubscribedEvents(): array
     {
-        return [ConsoleEvents::TERMINATE => ['onReindexEnd', -128]];
+        return [
+            ConsoleEvents::COMMAND => ['onReindexStart', -128],
+            ConsoleEvents::TERMINATE => ['onReindexEnd', -128],
+        ];
+    }
+
+    public function onReindexStart(ConsoleCommandEvent $event): void
+    {
+        if (self::REINDEX_COMMAND !== $event->getCommand()?->getName()) {
+            return;
+        }
+
+        /** @var list<string> $families */
+        $families = array_values((array) $event->getInput()->getOption('family'));
+        $this->completion->startRebuild($families);
     }
 
     public function onReindexEnd(ConsoleTerminateEvent $event): void
