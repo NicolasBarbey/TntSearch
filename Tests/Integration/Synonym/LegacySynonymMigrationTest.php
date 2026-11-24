@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace TntSearch\Tests\Integration\Synonym;
 
+use Psr\Log\NullLogger;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 use Thelia\Model\LangQuery;
 use Thelia\Model\SearchSynonym;
 use Thelia\Model\SearchSynonymQuery;
@@ -11,6 +13,7 @@ use Thelia\Test\IntegrationTestCase;
 use TntSearch\Model\TntSynonym;
 use TntSearch\Model\TntSynonymQuery;
 use TntSearch\Synonym\LegacySynonymMigration;
+use TntSearch\TntSearch;
 
 final class LegacySynonymMigrationTest extends IntegrationTestCase
 {
@@ -61,6 +64,38 @@ final class LegacySynonymMigrationTest extends IntegrationTestCase
         $this->migration->migrate();
 
         self::assertSame('smartphone', SearchSynonymQuery::create()->filterByLangId($lang->getId())->findOneByTerm('téléphone')?->getSynonyms());
+    }
+
+    public function testACopyThatFailedIsTriedAgainUntilItSucceeds(): void
+    {
+        $this->group(1, ['téléphone', 'tel']);
+        LegacySynonymMigration::schedule();
+        $refusing = new class implements EventDispatcherInterface {
+            public function dispatch(object $event, ?string $eventName = null): object
+            {
+                throw new \RuntimeException('The dictionary refused the synonym.');
+            }
+        };
+
+        (new LegacySynonymMigration($refusing, new NullLogger()))->copyWhilePending();
+
+        self::assertFalse(SearchSynonymQuery::create()->filterByTerm('téléphone')->exists());
+        self::assertSame('1', (string) TntSearch::getConfigValue(LegacySynonymMigration::PENDING, ''));
+
+        $this->migration->copyWhilePending();
+
+        self::assertTrue(SearchSynonymQuery::create()->filterByTerm('téléphone')->exists());
+        self::assertSame('', (string) TntSearch::getConfigValue(LegacySynonymMigration::PENDING, ''));
+    }
+
+    public function testNothingIsCopiedOnceTheCopyIsDone(): void
+    {
+        $this->group(1, ['téléphone', 'tel']);
+        TntSearch::setConfigValue(LegacySynonymMigration::PENDING, '');
+
+        $this->migration->copyWhilePending();
+
+        self::assertFalse(SearchSynonymQuery::create()->filterByTerm('téléphone')->exists());
     }
 
     public function testMigratingTwiceCopiesNothingMore(): void

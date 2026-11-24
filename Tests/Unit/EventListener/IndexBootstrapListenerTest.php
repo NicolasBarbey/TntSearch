@@ -15,6 +15,7 @@ use Symfony\Component\HttpKernel\Event\TerminateEvent;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use TntSearch\EventListener\IndexBootstrapListener;
 use TntSearch\Search\CatalogueReindexer;
+use TntSearch\Synonym\LegacySynonymMigration;
 use TntSearch\Service\Provider\IndexationProvider;
 use TntSearch\Service\Provider\TntSearchProvider;
 
@@ -44,13 +45,13 @@ final class IndexBootstrapListenerTest extends TestCase
 
     public function testABackOfficeRequestBuildsEveryIndexWhenTheCustomerIndexIsMissing(): void
     {
-        $this->listener(customerIndexExists: false, fullBuilds: 1)
+        $this->listener(customerIndexExists: false, fullBuilds: 1, synonymCopies: 1)
             ->buildMissingIndexesAfterBackOfficeRequest($this->kernelTerminate('/admin/modules'));
     }
 
     public function testABackOfficeRequestHandsAMissingCatalogueToTheQueueInsteadOfBuildingIt(): void
     {
-        $this->listener(catalogueQueued: 1)
+        $this->listener(catalogueQueued: 1, synonymCopies: 1)
             ->buildMissingIndexesAfterBackOfficeRequest($this->kernelTerminate('/admin/modules'));
     }
 
@@ -60,7 +61,7 @@ final class IndexBootstrapListenerTest extends TestCase
             ->buildMissingIndexesAfterBackOfficeRequest($this->kernelTerminate('/search'));
     }
 
-    private function listener(bool $customerIndexExists = true, int $fullBuilds = 0, int $catalogueQueued = 0, int $catalogueRebuilds = 0): IndexBootstrapListener
+    private function listener(bool $customerIndexExists = true, int $fullBuilds = 0, int $catalogueQueued = 0, int $catalogueRebuilds = 0, int $synonymCopies = 0): IndexBootstrapListener
     {
         $indexationProvider = $this->createMock(IndexationProvider::class);
         $indexationProvider->expects(self::exactly($fullBuilds))->method('indexAll');
@@ -72,7 +73,10 @@ final class IndexBootstrapListenerTest extends TestCase
         $catalogueReindexer->expects(self::exactly($catalogueQueued))->method('queueOnceWhenMissing');
         $catalogueReindexer->expects(self::exactly($catalogueRebuilds))->method('rebuild');
 
-        return new IndexBootstrapListener($indexationProvider, $tntSearchProvider, $catalogueReindexer);
+        $legacySynonyms = $this->createMock(LegacySynonymMigration::class);
+        $legacySynonyms->expects(self::exactly($synonymCopies))->method('copyWhilePending');
+
+        return new IndexBootstrapListener($indexationProvider, $tntSearchProvider, $catalogueReindexer, $legacySynonyms);
     }
 
     private function consoleTerminate(string $commandName, int $exitCode): ConsoleTerminateEvent

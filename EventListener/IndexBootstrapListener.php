@@ -11,6 +11,7 @@ use Symfony\Component\HttpKernel\Event\TerminateEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Thelia\Log\Tlog;
 use TntSearch\Search\CatalogueReindexer;
+use TntSearch\Synonym\LegacySynonymMigration;
 use TntSearch\Service\Provider\IndexationProvider;
 use TntSearch\Service\Provider\TntSearchProvider;
 
@@ -31,6 +32,7 @@ final readonly class IndexBootstrapListener implements EventSubscriberInterface
         private IndexationProvider $indexationProvider,
         private TntSearchProvider $tntSearchProvider,
         private CatalogueReindexer $catalogueReindexer,
+        private LegacySynonymMigration $legacySynonyms,
     ) {
     }
 
@@ -47,6 +49,8 @@ final readonly class IndexBootstrapListener implements EventSubscriberInterface
         if (!$event->isMainRequest() || !str_starts_with($event->getRequest()->getPathInfo(), '/admin')) {
             return;
         }
+
+        $this->legacySynonyms->copyWhilePending();
 
         if (!$this->tntSearchProvider->hasIndexFile(self::CUSTOMER_INDEX)) {
             $this->indexAll();

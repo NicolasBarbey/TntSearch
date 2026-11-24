@@ -131,11 +131,8 @@ class TntSearch extends BaseModule
             }
         }
 
-        try {
-            (new LegacySynonymMigration($this->getDispatcher(), Tlog::getInstance()))->migrate();
-        } catch (\Throwable $exception) {
-            Tlog::getInstance()->addError('TntSearch: the synonyms of the module could not be copied: '.$exception->getMessage());
-        }
+        LegacySynonymMigration::schedule();
+        (new LegacySynonymMigration($this->getDispatcher(), Tlog::getInstance()))->copyWhilePending();
     }
 
     /**
