@@ -9,6 +9,7 @@ use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
 use Thelia\Command\SearchReindexCommand;
 use Thelia\Domain\Search\Message\IndexDocument;
 use TntSearch\Search\DocumentIndexes;
+use TntSearch\Search\Message\RebuildCatalogue;
 use TntSearch\Search\SearchMemo;
 
 final readonly class FailedCatalogueBatchListener
@@ -24,12 +25,18 @@ final readonly class FailedCatalogueBatchListener
     {
         $message = $event->getEnvelope()->getMessage();
 
-        if (!$message instanceof IndexDocument || $event->willRetry() || SearchReindexCommand::QUEUE_TRANSPORT !== $event->getReceiverName()) {
+        $family = match (true) {
+            $message instanceof IndexDocument => $message->family,
+            $message instanceof RebuildCatalogue => $message->families[0] ?? null,
+            default => null,
+        };
+
+        if (null === $family || $event->willRetry() || SearchReindexCommand::QUEUE_TRANSPORT !== $event->getReceiverName()) {
             return;
         }
 
-        $this->indexes->recordFailure($message->family);
-        $this->indexes->forgetCompletion($message->family);
+        $this->indexes->recordFailure($family);
+        $this->indexes->forgetCompletion($family);
         $this->memo->reset();
     }
 }

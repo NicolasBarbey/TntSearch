@@ -12,17 +12,19 @@ use Symfony\Component\Lock\Store\InMemoryStore;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\TransportNamesStamp;
-use Thelia\Domain\Search\Message\IndexDocument;
+use Thelia\Domain\Search\Contract\SearchableDocumentProviderInterface;
+use Thelia\Domain\Search\Contract\SearchScope;
 use Thelia\Domain\Search\Provider\ProductDocumentProvider;
 use Thelia\Domain\Search\SearchDocumentProviders;
 use Thelia\Domain\Search\SearchEngineRegistry;
 use Thelia\Domain\Search\SearchIndexer;
 use Thelia\Domain\Search\SearchLocales;
+use Thelia\Domain\Search\UnorderedDocumentIdentifiersException;
 use Thelia\Test\IntegrationTestCase;
 use Thelia\Test\Trait\RecordsSqlQueries;
 use TntSearch\Search\CatalogueCompletion;
 use TntSearch\Search\CatalogueReindexer;
-use TntSearch\Search\Message\MarkCatalogueIndexed;
+use TntSearch\Search\Message\RebuildCatalogue;
 use TntSearch\Search\SearchMemo;
 use TntSearch\Search\TntSearchEngine;
 use TntSearch\TntSearch;
@@ -71,11 +73,98 @@ final class CatalogueReindexerTest extends IntegrationTestCase
         $queued = \count($this->dispatched);
         $reindexer->queueOnceWhenMissing();
 
-        self::assertGreaterThan(0, $queued);
-        self::assertCount($queued, $this->dispatched);
-        self::assertInstanceOf(IndexDocument::class, $this->dispatched[0]->getMessage());
+        self::assertSame(1, $queued);
+        self::assertCount(1, $this->dispatched);
+        self::assertEquals(new RebuildCatalogue([ProductDocumentProvider::FAMILY]), $this->dispatched[0]->getMessage());
         self::assertSame(['async_heavy'], $this->dispatched[0]->last(TransportNamesStamp::class)?->getTransportNames());
-        self::assertInstanceOf(MarkCatalogueIndexed::class, $this->dispatched[$queued - 1]->getMessage());
+        self::assertFalse($this->engine->isAvailable());
+    }
+
+    public function testTheQueuedRebuildIsMarkedOnlyByTheStepAfterItsLastBatch(): void
+    {
+        $fixtures = $this->createFixtureFactory();
+        $category = $fixtures->category();
+        $taxRule = $fixtures->taxRule();
+        $currency = $fixtures->currency();
+
+        foreach (range(1, 100) as $index) {
+            $fixtures->product($category, $taxRule, $currency, ['title' => 'Lanterne '.$index]);
+        }
+
+        $reindexer = $this->reindexer('doctrine://default');
+        $reindexer->queueOnceWhenMissing();
+        $steps = 0;
+
+        while ([] !== $this->dispatched) {
+            $step = array_shift($this->dispatched)->getMessage();
+            self::assertInstanceOf(RebuildCatalogue::class, $step);
+            self::assertFalse($this->engine->isAvailable(), 'marked before the step '.$step->afterId);
+            $this->memo->reset();
+            $reindexer->continueRebuild($step);
+            ++$steps;
+        }
+
+        self::assertGreaterThanOrEqual(3, $steps);
+        $this->memo->reset();
+        self::assertTrue($this->engine->isAvailable());
+    }
+
+    public function testAProviderWhoseIdentifiersDoNotMoveOnStopsTheRebuildWithoutMarkingIt(): void
+    {
+        $providers = new SearchDocumentProviders([new class(new ProductDocumentProvider()) implements SearchableDocumentProviderInterface {
+            public function __construct(private SearchableDocumentProviderInterface $products)
+            {
+            }
+
+            public function family(): string
+            {
+                return $this->products->family();
+            }
+
+            public function scope(): SearchScope
+            {
+                return $this->products->scope();
+            }
+
+            public function isTranslatable(): bool
+            {
+                return $this->products->isTranslatable();
+            }
+
+            public function fieldWeights(): array
+            {
+                return $this->products->fieldWeights();
+            }
+
+            public function idsAfter(int $afterId, int $limit): array
+            {
+                return [1, 2];
+            }
+
+            public function documents(array $ids, ?string $locale): array
+            {
+                return $this->products->documents($ids, $locale);
+            }
+
+            public function visibleIds(array $ids): array
+            {
+                return $this->products->visibleIds($ids);
+            }
+        }]);
+
+        try {
+            $this->reindexer('doctrine://default', $providers)->rebuild();
+            self::fail('The rebuild went on with identifiers that do not move on.');
+        } catch (UnorderedDocumentIdentifiersException) {
+        }
+
+        try {
+            $this->reindexer('doctrine://default', $providers)->continueRebuild(new RebuildCatalogue([ProductDocumentProvider::FAMILY], 2));
+            self::fail('The queued rebuild went on with identifiers that do not move on.');
+        } catch (UnorderedDocumentIdentifiersException) {
+        }
+
+        self::assertSame([], $this->dispatched);
         self::assertFalse($this->engine->isAvailable());
     }
 
@@ -181,9 +270,9 @@ final class CatalogueReindexerTest extends IntegrationTestCase
         self::assertTrue($this->engine->isAvailable());
     }
 
-    private function reindexer(string $dsn): CatalogueReindexer
+    private function reindexer(string $dsn, ?SearchDocumentProviders $providers = null): CatalogueReindexer
     {
-        $providers = new SearchDocumentProviders([new ProductDocumentProvider()]);
+        $providers ??= new SearchDocumentProviders([new ProductDocumentProvider()]);
         $dispatched = &$this->dispatched;
         $warnings = &$this->warnings;
 

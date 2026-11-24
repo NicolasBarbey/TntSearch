@@ -34,7 +34,15 @@ final readonly class MarkCatalogueIndexedHandler
 
     public function __invoke(MarkCatalogueIndexed $message): void
     {
-        if (!$this->batchesAreWaiting()) {
+        $waiting = $this->batchesWaiting();
+
+        if (null === $waiting) {
+            $this->logger->warning('TntSearch: the queue {transport} cannot count its messages, so nothing tells that the last catalogue batch is indexed; the index is not marked complete and the database answers the searches; run thelia:search:reindex without --queue, or tntsearch:indexes.', ['transport' => SearchReindexCommand::QUEUE_TRANSPORT]);
+
+            return;
+        }
+
+        if (0 === $waiting) {
             $failed = $this->completion->mark($message->families, $message->locales);
 
             if ([] !== $failed) {
@@ -56,14 +64,14 @@ final readonly class MarkCatalogueIndexedHandler
         ));
     }
 
-    private function batchesAreWaiting(): bool
+    private function batchesWaiting(): ?int
     {
         if (!$this->receivers->has(SearchReindexCommand::QUEUE_TRANSPORT)) {
-            return false;
+            return null;
         }
 
         $receiver = $this->receivers->get(SearchReindexCommand::QUEUE_TRANSPORT);
 
-        return $receiver instanceof MessageCountAwareInterface && $receiver->getMessageCount() > 0;
+        return $receiver instanceof MessageCountAwareInterface ? $receiver->getMessageCount() : null;
     }
 }

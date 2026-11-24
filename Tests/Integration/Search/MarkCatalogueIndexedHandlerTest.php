@@ -24,6 +24,7 @@ use TntSearch\Search\CatalogueCompletion;
 use TntSearch\Search\DocumentIndexes;
 use TntSearch\Search\Message\MarkCatalogueIndexed;
 use TntSearch\Search\Message\MarkCatalogueIndexedHandler;
+use TntSearch\Search\Message\RebuildCatalogue;
 use TntSearch\Search\SearchMemo;
 use TntSearch\TntSearch;
 
@@ -73,6 +74,26 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
 
         self::assertTrue($this->indexes->isComplete('brand', 'en_US'));
         self::assertSame([], $this->dispatched);
+    }
+
+    public function testAQueueThatCannotCountItsMessagesNeverMarksTheCatalogue(): void
+    {
+        $this->handler(waitingMessages: null)(new MarkCatalogueIndexed(['brand'], ['en_US']));
+
+        self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
+        self::assertSame([], $this->dispatched);
+        self::assertCount(1, $this->warnings);
+    }
+
+    public function testAStepOfTheModuleRebuildThatFailedForGoodForgetsTheCompletionOfItsFamily(): void
+    {
+        $this->indexes->markComplete('brand', 'en_US');
+        $listener = new FailedCatalogueBatchListener($this->indexes, new SearchMemo());
+
+        $listener->forgetTheCompletionOfItsFamily(new WorkerMessageFailedEvent(new Envelope(new RebuildCatalogue(['brand', 'product'], 4)), SearchReindexCommand::QUEUE_TRANSPORT, new \RuntimeException()));
+
+        self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
+        self::assertTrue($this->indexes->hasFailed('brand'));
     }
 
     public function testTheMarkerGivesUpWithoutMarkingAfterTooManyChecks(): void
@@ -131,10 +152,10 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
         return new CatalogueCompletion(new SearchDocumentProviders([new BrandDocumentProvider()]), new SearchLocales(), $this->indexes, new SearchMemo());
     }
 
-    private function handler(int $waitingMessages): MarkCatalogueIndexedHandler
+    private function handler(?int $waitingMessages): MarkCatalogueIndexedHandler
     {
         $dispatched = &$this->dispatched;
-        $receiver = new class($waitingMessages) implements ReceiverInterface, MessageCountAwareInterface {
+        $receiver = null === $waitingMessages ? $this->createStub(ReceiverInterface::class) : new class($waitingMessages) implements ReceiverInterface, MessageCountAwareInterface {
             public function __construct(private int $waitingMessages)
             {
             }

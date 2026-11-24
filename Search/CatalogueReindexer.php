@@ -12,10 +12,11 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\TransportNamesStamp;
 use Thelia\Command\SearchReindexCommand;
-use Thelia\Domain\Search\Message\IndexDocument;
+use Thelia\Domain\Search\Contract\SearchableDocumentProviderInterface;
 use Thelia\Domain\Search\SearchDocumentProviders;
 use Thelia\Domain\Search\SearchIndexer;
-use TntSearch\Search\Message\MarkCatalogueIndexed;
+use Thelia\Domain\Search\UnorderedDocumentIdentifiersException;
+use TntSearch\Search\Message\RebuildCatalogue;
 use TntSearch\TntSearch;
 
 #[Autoconfigure(public: true)]
@@ -77,16 +78,59 @@ readonly class CatalogueReindexer
             }
 
             $this->completion->startRebuild();
-
-            foreach ($this->batches() as [$family, $ids]) {
-                $this->bus->dispatch(new Envelope(new IndexDocument($family, $ids), [new TransportNamesStamp([SearchReindexCommand::QUEUE_TRANSPORT])]));
-            }
-
-            $this->bus->dispatch(new Envelope(new MarkCatalogueIndexed(), [new TransportNamesStamp([SearchReindexCommand::QUEUE_TRANSPORT])]));
+            $this->queue(new RebuildCatalogue($this->providers->families()));
             TntSearch::setConfigValue(self::QUEUED, (string) time());
         } finally {
             $lock->release();
         }
+    }
+
+    public function continueRebuild(RebuildCatalogue $message): void
+    {
+        $families = $message->families;
+        $afterId = $message->afterId;
+
+        while ([] !== $families) {
+            $provider = $this->providers->get($families[0]);
+            $ids = null === $provider ? [] : self::idsAfter($provider, $afterId);
+
+            if ([] !== $ids) {
+                $this->indexer->synchronize($families[0], $ids);
+                $this->queue(new RebuildCatalogue($families, max($ids)));
+
+                return;
+            }
+
+            array_shift($families);
+            $afterId = 0;
+        }
+
+        $failed = $this->completion->mark();
+
+        if ([] !== $failed) {
+            $this->logger->warning('TntSearch: a batch of {families} failed during the rebuild, their index is not marked complete and the database answers their searches; run thelia:search:reindex.', ['families' => implode(', ', $failed)]);
+        }
+    }
+
+    private function queue(RebuildCatalogue $message): void
+    {
+        $this->bus->dispatch(new Envelope($message, [new TransportNamesStamp([SearchReindexCommand::QUEUE_TRANSPORT])]));
+    }
+
+    /**
+     * @return list<int>
+     */
+    private static function idsAfter(SearchableDocumentProviderInterface $provider, int $afterId): array
+    {
+        $ids = $provider->idsAfter($afterId, self::BATCH_SIZE);
+        $ascending = $ids;
+        sort($ascending);
+
+        if ($ascending !== $ids || ([] !== $ids && $ids[0] <= $afterId)) {
+            throw new UnorderedDocumentIdentifiersException(\sprintf('The search document provider %s returns identifiers after #%d that are not in ascending order or not after it, the rebuild cannot tell where it stopped.', $provider::class, $afterId));
+        }
+
+        return $ids;
     }
 
     private static function alreadyQueued(): bool
@@ -105,7 +149,7 @@ readonly class CatalogueReindexer
             $provider = $this->providers->get($family);
             $afterId = 0;
 
-            while (null !== $provider && [] !== ($ids = $provider->idsAfter($afterId, self::BATCH_SIZE))) {
+            while (null !== $provider && [] !== ($ids = self::idsAfter($provider, $afterId))) {
                 yield [$family, $ids];
                 $afterId = max($ids);
             }
