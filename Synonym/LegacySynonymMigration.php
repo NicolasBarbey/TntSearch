@@ -84,7 +84,24 @@ readonly class LegacySynonymMigration
             foreach ($groups as $groupId => $terms) {
                 $terms = array_values(array_unique($terms));
 
-                if (\count($terms) < 2 || SearchSynonymQuery::create()->filterByLangId($lang->getId())->filterByTerm($terms[0])->exists()) {
+                if (\count($terms) < 2) {
+                    continue;
+                }
+
+                $existing = SearchSynonymQuery::create()->filterByLangId($lang->getId())->findOneByTerm($terms[0]);
+
+                if (null !== $existing) {
+                    $missing = array_values(array_diff(\array_slice($terms, 1), explode("\n", (string) $existing->getSynonyms())));
+
+                    if ([] !== $missing) {
+                        $this->logger->warning('TntSearch: the synonym group {group} is left out in {locale}, the dictionary already holds its term "{term}"; add its other terms to that entry by hand: {terms}.', [
+                            'group' => $groupId,
+                            'locale' => $lang->getLocale(),
+                            'term' => $terms[0],
+                            'terms' => implode(', ', $missing),
+                        ]);
+                    }
+
                     continue;
                 }
 
@@ -121,6 +138,8 @@ readonly class LegacySynonymMigration
 
     private static function legacyTableExists(): bool
     {
-        return false !== Propel::getConnection()->query("SHOW TABLES LIKE 'tnt_synonym'")?->fetchColumn();
+        $statement = Propel::getConnection()->query("SHOW TABLES LIKE 'tnt_synonym'");
+
+        return false !== $statement && false !== $statement->fetchColumn();
     }
 }

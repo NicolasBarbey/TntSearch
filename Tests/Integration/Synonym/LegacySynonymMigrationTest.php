@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace TntSearch\Tests\Integration\Synonym;
 
+use Psr\Log\AbstractLogger;
+use Psr\Log\LogLevel;
 use Psr\Log\NullLogger;
 use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 use Thelia\Model\LangQuery;
@@ -66,6 +68,31 @@ final class LegacySynonymMigrationTest extends IntegrationTestCase
         self::assertSame('smartphone', SearchSynonymQuery::create()->filterByLangId($lang->getId())->findOneByTerm('téléphone')?->getSynonyms());
     }
 
+    public function testAGroupWhoseTermTheMerchantAlreadyDescribedIsReportedWithTheTermsItWouldHaveAdded(): void
+    {
+        $lang = LangQuery::create()->filterByActive(1)->findOne();
+        (new SearchSynonym())->setLangId($lang->getId())->setTerm('téléphone')->setSynonyms("smartphone\ntel")->setBidirectional(0)->setActive(1)->save();
+        $this->group(1, ['téléphone', 'tel', 'portable']);
+        $warnings = [];
+
+        $this->migrationLogging($warnings)->migrate();
+
+        $reported = array_values(array_filter($warnings, static fn (array $warning): bool => $lang->getLocale() === $warning['locale']));
+        self::assertCount(1, $reported);
+        self::assertSame('portable', $reported[0]['terms']);
+    }
+
+    public function testACopyTriedAgainDoesNotReportTheGroupsItAlreadyCopied(): void
+    {
+        $this->group(1, ['téléphone', 'tel']);
+        $warnings = [];
+
+        $this->migrationLogging($warnings)->migrate();
+        $this->migrationLogging($warnings)->migrate();
+
+        self::assertSame([], $warnings);
+    }
+
     public function testACopyThatFailedIsTriedAgainUntilItSucceeds(): void
     {
         $this->group(1, ['téléphone', 'tel']);
@@ -120,6 +147,26 @@ final class LegacySynonymMigrationTest extends IntegrationTestCase
 
         self::assertSame(LangQuery::create()->filterByActive(1)->count(), $first);
         self::assertSame(0, $second);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $warnings
+     */
+    private function migrationLogging(array &$warnings): LegacySynonymMigration
+    {
+        return new LegacySynonymMigration(static::getContainer()->get('event_dispatcher'), new class($warnings) extends AbstractLogger {
+            /** @param list<array<string, mixed>> $warnings */
+            public function __construct(private array &$warnings)
+            {
+            }
+
+            public function log($level, \Stringable|string $message, array $context = []): void
+            {
+                if (LogLevel::WARNING === $level) {
+                    $this->warnings[] = $context;
+                }
+            }
+        });
     }
 
     /**
