@@ -62,6 +62,13 @@ final readonly class CatalogueCompletion
         }
     }
 
+    public function recordFailure(string $family): void
+    {
+        $this->indexes->recordFailure($family);
+        $this->indexes->forgetCompletion($family);
+        $this->memo->reset();
+    }
+
     public function isEveryFamilyMarked(): bool
     {
         $locales = null;

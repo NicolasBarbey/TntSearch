@@ -109,6 +109,79 @@ final class CatalogueReindexerTest extends IntegrationTestCase
         self::assertTrue($this->engine->isAvailable());
     }
 
+    public function testAFailedBatchLetsTheRebuildGoOnAndLeavesItsFamilyUnmarked(): void
+    {
+        $fixtures = $this->createFixtureFactory();
+        $category = $fixtures->category();
+        $taxRule = $fixtures->taxRule();
+        $currency = $fixtures->currency();
+
+        foreach (range(1, 100) as $index) {
+            $fixtures->product($category, $taxRule, $currency, ['title' => 'Lanterne '.$index]);
+        }
+
+        $failures = 1;
+        $providers = new SearchDocumentProviders([new class(new ProductDocumentProvider(), $failures) implements SearchableDocumentProviderInterface {
+            public function __construct(private SearchableDocumentProviderInterface $products, private int &$failures)
+            {
+            }
+
+            public function family(): string
+            {
+                return $this->products->family();
+            }
+
+            public function scope(): SearchScope
+            {
+                return $this->products->scope();
+            }
+
+            public function isTranslatable(): bool
+            {
+                return $this->products->isTranslatable();
+            }
+
+            public function fieldWeights(): array
+            {
+                return $this->products->fieldWeights();
+            }
+
+            public function idsAfter(int $afterId, int $limit): array
+            {
+                return $this->products->idsAfter($afterId, $limit);
+            }
+
+            public function documents(array $ids, ?string $locale): array
+            {
+                if ($this->failures-- > 0) {
+                    throw new \RuntimeException('The index file is locked.');
+                }
+
+                return $this->products->documents($ids, $locale);
+            }
+
+            public function visibleIds(array $ids): array
+            {
+                return $this->products->visibleIds($ids);
+            }
+        }]);
+        $reindexer = $this->reindexer('doctrine://default', $providers);
+        $reindexer->queueOnceWhenMissing();
+        $steps = 0;
+
+        while ([] !== $this->dispatched) {
+            $step = array_shift($this->dispatched)->getMessage();
+            self::assertInstanceOf(RebuildCatalogue::class, $step);
+            $reindexer->continueRebuild($step);
+            ++$steps;
+        }
+
+        $this->memo->reset();
+        self::assertGreaterThanOrEqual(3, $steps);
+        self::assertTrue(TntSearchEngineTest::indexes(self::ENVIRONMENT)->hasFailed(ProductDocumentProvider::FAMILY));
+        self::assertFalse($this->engine->isAvailable());
+    }
+
     public function testAProviderWhoseIdentifiersDoNotMoveOnStopsTheRebuildWithoutMarkingIt(): void
     {
         $providers = new SearchDocumentProviders([new class(new ProductDocumentProvider()) implements SearchableDocumentProviderInterface {

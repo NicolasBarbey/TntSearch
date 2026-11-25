@@ -95,7 +95,17 @@ readonly class CatalogueReindexer
             $ids = null === $provider ? [] : self::idsAfter($provider, $afterId);
 
             if ([] !== $ids) {
-                $this->indexer->synchronize($families[0], $ids);
+                try {
+                    $this->indexer->synchronize($families[0], $ids);
+                } catch (\Throwable $exception) {
+                    $this->completion->recordFailure($families[0]);
+                    $this->logger->error('TntSearch: a rebuild batch of {family} after #{after} failed ({exception}), the rebuild goes on and leaves {family} to the database until the next one.', [
+                        'family' => $families[0],
+                        'after' => $afterId,
+                        'exception' => $exception::class,
+                    ]);
+                }
+
                 $this->queue(new RebuildCatalogue($families, max($ids)));
 
                 return;
