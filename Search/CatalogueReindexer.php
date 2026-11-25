@@ -12,10 +12,9 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\TransportNamesStamp;
 use Thelia\Command\SearchReindexCommand;
-use Thelia\Domain\Search\Contract\SearchableDocumentProviderInterface;
 use Thelia\Domain\Search\SearchDocumentProviders;
+use Thelia\Domain\Search\SearchDocumentWalk;
 use Thelia\Domain\Search\SearchIndexer;
-use Thelia\Domain\Search\UnorderedDocumentIdentifiersException;
 use TntSearch\Search\Message\RebuildCatalogue;
 use TntSearch\TntSearch;
 
@@ -92,7 +91,7 @@ readonly class CatalogueReindexer
 
         while ([] !== $families) {
             $provider = $this->providers->get($families[0]);
-            $ids = null === $provider ? [] : self::idsAfter($provider, $afterId);
+            $ids = null === $provider ? [] : SearchDocumentWalk::idsAfter($provider, $afterId, self::BATCH_SIZE);
 
             if ([] !== $ids) {
                 try {
@@ -127,22 +126,6 @@ readonly class CatalogueReindexer
         $this->bus->dispatch(new Envelope($message, [new TransportNamesStamp([SearchReindexCommand::QUEUE_TRANSPORT])]));
     }
 
-    /**
-     * @return list<int>
-     */
-    private static function idsAfter(SearchableDocumentProviderInterface $provider, int $afterId): array
-    {
-        $ids = $provider->idsAfter($afterId, self::BATCH_SIZE);
-        $ascending = $ids;
-        sort($ascending);
-
-        if ($ascending !== $ids || ([] !== $ids && $ids[0] <= $afterId)) {
-            throw new UnorderedDocumentIdentifiersException(\sprintf('The search document provider %s returns identifiers after #%d that are not in ascending order or not after it, the rebuild cannot tell where it stopped.', $provider::class, $afterId));
-        }
-
-        return $ids;
-    }
-
     private static function alreadyQueued(): bool
     {
         $queuedAt = (string) TntSearch::getConfigValue(self::QUEUED, '');
@@ -157,11 +140,13 @@ readonly class CatalogueReindexer
     {
         foreach ($this->providers->families() as $family) {
             $provider = $this->providers->get($family);
-            $afterId = 0;
 
-            while (null !== $provider && [] !== ($ids = self::idsAfter($provider, $afterId))) {
+            if (null === $provider) {
+                continue;
+            }
+
+            foreach (SearchDocumentWalk::batches($provider, 0, self::BATCH_SIZE) as $ids) {
                 yield [$family, $ids];
-                $afterId = max($ids);
             }
         }
     }
