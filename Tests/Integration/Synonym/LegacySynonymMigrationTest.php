@@ -88,6 +88,19 @@ final class LegacySynonymMigrationTest extends IntegrationTestCase
         self::assertSame('', (string) TntSearch::getConfigValue(LegacySynonymMigration::PENDING, ''));
     }
 
+    public function testAGroupTheDictionaryRefusesIsLeftOutInsteadOfRetriedForever(): void
+    {
+        $this->group(1, ['café', 'cafe']);
+        $this->group(2, ['téléphone', 'tel']);
+        LegacySynonymMigration::schedule();
+
+        $this->migration->copyWhilePending();
+
+        self::assertFalse(SearchSynonymQuery::create()->filterByTerm('café')->exists());
+        self::assertTrue(SearchSynonymQuery::create()->filterByTerm('téléphone')->exists());
+        self::assertSame('', (string) TntSearch::getConfigValue(LegacySynonymMigration::PENDING, ''));
+    }
+
     public function testNothingIsCopiedOnceTheCopyIsDone(): void
     {
         $this->group(1, ['téléphone', 'tel']);

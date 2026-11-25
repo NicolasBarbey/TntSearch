@@ -99,6 +99,12 @@ readonly class LegacySynonymMigration
                         TheliaEvents::SEARCH_SYNONYM_CREATE,
                     );
                     ++$created;
+                } catch (\InvalidArgumentException $exception) {
+                    $this->logger->warning('TntSearch: the synonym group {group} is refused by the {locale} dictionary and left out: {message}', [
+                        'group' => $groupId,
+                        'locale' => $lang->getLocale(),
+                        'message' => $exception->getMessage(),
+                    ]);
                 } catch (\Throwable $exception) {
                     ++$failed;
                     $this->logger->warning('TntSearch: the synonym group {group} was not copied to the {locale} dictionary: {message}', [
