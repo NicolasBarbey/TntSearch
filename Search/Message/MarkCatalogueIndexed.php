@@ -9,15 +9,9 @@ use Symfony\Component\DependencyInjection\Attribute\Exclude;
 #[Exclude]
 final readonly class MarkCatalogueIndexed
 {
-    /**
-     * @param list<string>      $families
-     * @param list<string>|null $locales
-     */
     public function __construct(
-        public array $families = [],
-        public ?array $locales = null,
+        public string $run,
         public int $postponements = 0,
-        public ?string $run = null,
     ) {
     }
 }

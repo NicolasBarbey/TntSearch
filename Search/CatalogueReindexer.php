@@ -35,7 +35,7 @@ readonly class CatalogueReindexer
         private MessageBusInterface $bus,
         private LockFactory $lockFactory,
         private LoggerInterface $logger,
-        #[Autowire('%env(default:thelia.messenger.inline_transport_dsn:MESSENGER_TRANSPORT_DSN)%')]
+        #[Autowire('%env(thelia_heavy_queue:MESSENGER_TRANSPORT_DSN)%')]
         #[\SensitiveParameter]
         private string $jobQueueDsn = 'sync://',
     ) {

@@ -7,6 +7,7 @@ namespace TntSearch\EventListener;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\Console\Event\ConsoleTerminateEvent;
+use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\Messenger\Envelope;
@@ -24,17 +25,23 @@ final class ReindexCompletionListener implements EventSubscriberInterface
 {
     private const string REINDEX_COMMAND = 'thelia:search:reindex';
 
+    private bool $queued = false;
+
     private ?string $run = null;
 
-    private int $batches = 0;
+    /** @var list<string> */
+    private array $families = [];
+
+    /** @var list<string>|null */
+    private ?array $locales = null;
 
     public function __construct(
         private readonly CatalogueCompletion $completion,
         private readonly MessageBusInterface $bus,
         private readonly RebuildTally $tally,
-        #[Autowire('%env(default:thelia.messenger.inline_transport_dsn:MESSENGER_TRANSPORT_DSN)%')]
+        #[Autowire('%env(thelia_heavy_queue:MESSENGER_TRANSPORT_DSN)%')]
         #[\SensitiveParameter]
-        private readonly string $jobQueueDsn = 'sync://',
+        private readonly string $heavyQueueDsn = 'sync://',
     ) {
     }
 
@@ -53,68 +60,80 @@ final class ReindexCompletionListener implements EventSubscriberInterface
             return;
         }
 
-        /** @var list<string> $families */
-        $families = array_values((array) $event->getInput()->getOption('family'));
-        $this->completion->startRebuild($families);
-
-        if (true === $event->getInput()->getOption('queue') && $this->queueIsAsynchronous()) {
-            $this->run = bin2hex(random_bytes(16));
-            $this->batches = 0;
-            $this->tally->start($this->run);
-        }
+        $input = $event->getInput();
+        $this->families = self::families($input);
+        $this->locales = self::locales($input);
+        $this->queued = true === $input->getOption('queue') && $this->heavyQueueIsAsynchronous();
+        $this->run = null;
     }
 
     public function stampQueuedBatch(SendMessageToTransportsEvent $event): void
     {
         $envelope = $event->getEnvelope();
 
-        if (null === $this->run || !$envelope->getMessage() instanceof IndexDocument || !\array_key_exists(SearchReindexCommand::QUEUE_TRANSPORT, $event->getSenders())) {
+        if (!$this->queued || !$envelope->getMessage() instanceof IndexDocument || !\array_key_exists(SearchReindexCommand::QUEUE_TRANSPORT, $event->getSenders())) {
             return;
         }
 
+        if (null === $this->run) {
+            $this->completion->startRebuild($this->families);
+        }
+
+        $this->run = $this->tally->send($this->run ?? bin2hex(random_bytes(16)), $this->families, $this->locales);
         $event->setEnvelope($envelope->with(new RebuildRunStamp($this->run)));
-        ++$this->batches;
     }
 
     public function onReindexEnd(ConsoleTerminateEvent $event): void
     {
-        $input = $event->getInput();
-
         if (self::REINDEX_COMMAND !== $event->getCommand()?->getName()) {
             return;
         }
 
-        $run = $this->run;
+        $queued = $this->queued;
+        $this->queued = false;
         $this->run = null;
 
         if (0 !== $event->getExitCode()) {
-            if (null !== $run) {
-                $this->tally->finish($run);
-            }
-
             return;
         }
 
-        /** @var list<string> $families */
-        $families = array_values((array) $input->getOption('family'));
-        /** @var list<string> $locales */
-        $locales = array_values((array) $input->getOption('locale'));
+        $families = self::families($event->getInput());
+        $locales = self::locales($event->getInput());
+        $run = $queued ? $this->tally->close($families, $locales) : null;
 
         if (null === $run) {
-            $this->completion->mark($families, [] === $locales ? null : $locales);
+            $this->completion->startRebuild($families);
+            $this->completion->mark($families, $locales);
 
             return;
         }
 
-        $this->tally->expect($run, $this->batches);
         $this->bus->dispatch(new Envelope(
-            new MarkCatalogueIndexed($families, [] === $locales ? null : $locales, 0, $run),
+            new MarkCatalogueIndexed($run),
             [new TransportNamesStamp([SearchReindexCommand::QUEUE_TRANSPORT])],
         ));
     }
 
-    private function queueIsAsynchronous(): bool
+    /**
+     * @return list<string>
+     */
+    private static function families(InputInterface $input): array
     {
-        return '' !== $this->jobQueueDsn && !str_starts_with($this->jobQueueDsn, 'sync://');
+        return array_values(array_map('strval', (array) $input->getOption('family')));
+    }
+
+    /**
+     * @return list<string>|null
+     */
+    private static function locales(InputInterface $input): ?array
+    {
+        $locales = array_values(array_map('strval', (array) $input->getOption('locale')));
+
+        return [] === $locales ? null : $locales;
+    }
+
+    private function heavyQueueIsAsynchronous(): bool
+    {
+        return '' !== $this->heavyQueueDsn && !str_starts_with($this->heavyQueueDsn, 'sync://');
     }
 }

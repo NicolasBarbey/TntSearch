@@ -70,10 +70,10 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
         self::assertFalse($this->indexes->isComplete('category', 'fr_FR'));
     }
 
-    public function testAQueuedReindexTellsItsMarkerHowManyBatchesItQueued(): void
+    public function testAQueuedReindexStampsItsBatchesAndHandsItsRunToTheMarker(): void
     {
-        $listener = $this->listener('doctrine://default');
-        $listener->onReindexStart(new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input(['--queue' => true]), new NullOutput()));
+        $listener = $this->listener();
+        $listener->onReindexStart($this->start(['--queue' => true]));
         $batches = [
             $this->send($listener, new IndexDocument('category', [1, 2]), SearchReindexCommand::QUEUE_TRANSPORT),
             $this->send($listener, new IndexDocument('category', [3]), SearchReindexCommand::QUEUE_TRANSPORT),
@@ -85,42 +85,99 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
         self::assertCount(1, $this->dispatched);
         $marker = $this->dispatched[0]->getMessage();
         self::assertInstanceOf(MarkCatalogueIndexed::class, $marker);
-        self::assertNotNull($marker->run);
         self::assertSame(['async_heavy'], $this->dispatched[0]->last(TransportNamesStamp::class)?->getTransportNames());
         self::assertSame([$marker->run, $marker->run], array_map(static fn (Envelope $batch): ?string => $batch->last(RebuildRunStamp::class)?->run, $batches));
         self::assertNull($everyday->last(RebuildRunStamp::class));
-
-        $tally = new RebuildTally($this->indexes);
-        $tally->count($marker->run);
-        self::assertFalse($tally->isComplete($marker->run));
-        $tally->count($marker->run);
-        self::assertTrue($tally->isComplete($marker->run));
+        $tally = $this->tally()->of($marker->run);
+        self::assertSame(2, $tally['sent'] ?? null);
+        self::assertTrue($tally['closed'] ?? null);
     }
 
-    public function testAReindexQueuedWithoutAnAsynchronousQueueIsMarkedAtItsEnd(): void
+    public function testAReindexQueuedWithoutAnAsynchronousHeavyQueueIsMarkedAtItsEnd(): void
     {
         $listener = $this->listener('sync://');
-        $listener->onReindexStart(new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input(['--queue' => true, '--family' => ['category'], '--locale' => ['fr_FR']]), new NullOutput()));
+        $options = ['--queue' => true, '--family' => ['category'], '--locale' => ['fr_FR']];
+        $listener->onReindexStart($this->start($options));
         $batch = $this->send($listener, new IndexDocument('category', [1]), SearchReindexCommand::QUEUE_TRANSPORT);
-        $listener->onReindexEnd($this->terminate(['--queue' => true, '--family' => ['category'], '--locale' => ['fr_FR']], Command::SUCCESS));
+        $listener->onReindexEnd($this->terminate($options, Command::SUCCESS));
 
         self::assertNull($batch->last(RebuildRunStamp::class));
         self::assertSame([], $this->dispatched);
         self::assertTrue($this->indexes->isComplete('category', 'fr_FR'));
     }
 
-    public function testAReindexThatStartsLiftsTheFailureOfItsFamiliesSoItsEndCanMarkThem(): void
+    public function testAReindexRefusedBeforeSendingAnythingLeavesTheRunInProgressAndItsFailuresAlone(): void
+    {
+        $running = $this->tally()->send('run-a', ['category'], null);
+        $this->tally()->close(['category'], null);
+        $this->indexes->recordFailure('category');
+
+        $refused = $this->listener();
+        $refused->onReindexStart($this->start(['--queue' => true, '--family' => ['category']]));
+        $refused->onReindexEnd($this->terminate(['--queue' => true, '--family' => ['category']], Command::FAILURE));
+
+        self::assertSame('run-a', $this->tally()->of($running)['run'] ?? null);
+        self::assertTrue($this->indexes->hasFailed('category'));
+        self::assertSame([], $this->dispatched);
+    }
+
+    public function testAQueuedReindexThatFailedLeavesItsCountOpenForTheRunThatResumesIt(): void
+    {
+        $interrupted = $this->listener();
+        $interrupted->onReindexStart($this->start(['--queue' => true]));
+        $first = $this->send($interrupted, new IndexDocument('category', [1]), SearchReindexCommand::QUEUE_TRANSPORT);
+        $interrupted->onReindexEnd($this->terminate(['--queue' => true], Command::FAILURE));
+
+        self::assertSame([], $this->dispatched);
+
+        $resumed = $this->listener();
+        $resumed->onReindexStart($this->start(['--queue' => true]));
+        $second = $this->send($resumed, new IndexDocument('category', [2]), SearchReindexCommand::QUEUE_TRANSPORT);
+        $resumed->onReindexEnd($this->terminate(['--queue' => true], Command::SUCCESS));
+
+        $run = $first->last(RebuildRunStamp::class)?->run;
+        self::assertNotNull($run);
+        self::assertSame($run, $second->last(RebuildRunStamp::class)?->run);
+        self::assertSame(2, $this->tally()->of($run)['sent'] ?? null);
+        self::assertCount(1, $this->dispatched);
+        self::assertSame($run, $this->dispatched[0]->getMessage()->run);
+    }
+
+    public function testAQueuedReindexWithNothingToSendWaitsForTheBatchesOfTheRunItFollows(): void
+    {
+        $this->tally()->send('run-a', ['category'], null);
+
+        $listener = $this->listener();
+        $listener->onReindexStart($this->start(['--queue' => true, '--family' => ['brand']]));
+        $listener->onReindexEnd($this->terminate(['--queue' => true, '--family' => ['brand']], Command::SUCCESS));
+
+        self::assertCount(1, $this->dispatched);
+        self::assertSame('run-a', $this->dispatched[0]->getMessage()->run);
+        self::assertSame(['category', 'brand'], $this->tally()->of('run-a')['families'] ?? null);
+        self::assertFalse($this->indexes->isComplete('category', 'fr_FR'));
+    }
+
+    public function testAReindexThatEndedWellLiftsTheFailureOfItsFamiliesSoItCanMarkThem(): void
     {
         $this->indexes->recordFailure('category');
 
-        $this->listener()->onReindexEnd($this->terminate(['--family' => ['category'], '--locale' => ['fr_FR']], Command::SUCCESS));
-        self::assertFalse($this->indexes->isComplete('category', 'fr_FR'));
-
-        $this->listener()->onReindexStart(new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input(['--family' => ['category', '../unknown']]), new NullOutput()));
-        $this->listener()->onReindexEnd($this->terminate(['--family' => ['category'], '--locale' => ['fr_FR']], Command::SUCCESS));
+        $this->listener()->onReindexEnd($this->terminate(['--family' => ['category', '../unknown'], '--locale' => ['fr_FR']], Command::SUCCESS));
 
         self::assertFalse($this->indexes->hasFailed('category'));
         self::assertTrue($this->indexes->isComplete('category', 'fr_FR'));
+    }
+
+    private function tally(): RebuildTally
+    {
+        return new RebuildTally($this->indexes);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function start(array $options): ConsoleCommandEvent
+    {
+        return new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input($options), new NullOutput());
     }
 
     private function send(ReindexCompletionListener $listener, object $message, string $transport): Envelope
