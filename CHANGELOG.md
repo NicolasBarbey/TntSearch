@@ -14,9 +14,10 @@ Le module devient le moteur du contrat de recherche du cœur (Thelia 3.5). March
 
 - `thelia/core` `^3.5` requis.
 - Les synonymes sont ceux du dictionnaire du cœur. Les groupes du module sont copiés à la mise à jour ; une copie en échec est retentée à chaque requête du back-office tant que la table `tnt_synonym` existe.
-- `thelia:search:reindex --queue` : avec un transport qui ne sait pas compter ses messages, l'index n'est plus marqué complet (avertissement au journal) ; lancer la commande sans `--queue`, ou `tntsearch:indexes`.
+- `thelia:search:reindex --queue` : l'index n'est marqué complet qu'une fois traités, ou abandonnés pour de bon, tous les lots que la commande a mis en file, quel que soit le transport. Les lots sont comptés dans `rebuild.tally`, à côté des index.
 - `WeightEvent` et `ExtendQueryEvent` ne s'appliquent plus qu'aux index des clients et des commandes.
-- `Tokenizer\Tokenizer` ne résout plus les synonymes.
+- `Tokenizer\Tokenizer` ne résout plus les synonymes et n'a plus de méthode `normalizeToken()`.
+- `EventListener\IndexUpdateListener` ne met plus à jour le catalogue : ses méthodes `updateProductIndex()`, `updateCategoryIndex()`, `updateFolderIndex()`, `updateBrandIndex()` et `updateContentIndex()` sont supprimées.
 - `Service\Stemmer` : le portugais utilise `PortugueseStemmer` (et non plus `PolishStemmer`).
 
 ### Supprimé

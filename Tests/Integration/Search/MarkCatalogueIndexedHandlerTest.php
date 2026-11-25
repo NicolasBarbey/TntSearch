@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace TntSearch\Tests\Integration\Search;
 
 use Psr\Log\AbstractLogger;
+use Psr\Log\NullLogger;
 use Symfony\Component\DependencyInjection\ServiceLocator;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
+use Symfony\Component\Messenger\Event\WorkerMessageHandledEvent;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\DelayStamp;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
@@ -20,11 +22,14 @@ use Thelia\Domain\Search\SearchDocumentProviders;
 use Thelia\Domain\Search\SearchLocales;
 use Thelia\Test\IntegrationTestCase;
 use TntSearch\EventListener\FailedCatalogueBatchListener;
+use TntSearch\EventListener\RebuildTallyListener;
 use TntSearch\Search\CatalogueCompletion;
 use TntSearch\Search\DocumentIndexes;
 use TntSearch\Search\Message\MarkCatalogueIndexed;
 use TntSearch\Search\Message\MarkCatalogueIndexedHandler;
 use TntSearch\Search\Message\RebuildCatalogue;
+use TntSearch\Search\Message\RebuildRunStamp;
+use TntSearch\Search\RebuildTally;
 use TntSearch\Search\SearchMemo;
 use TntSearch\TntSearch;
 
@@ -94,6 +99,66 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
 
         self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
         self::assertTrue($this->indexes->hasFailed('brand'));
+    }
+
+    public function testARunIsMarkedOnlyOnceEveryBatchItQueuedWasHandled(): void
+    {
+        $tally = new RebuildTally($this->indexes);
+        $tally->start('run-a');
+        $tally->expect('run-a', 2);
+        $tally->count('run-a');
+
+        $this->handler(waitingMessages: 0)(new MarkCatalogueIndexed(['brand'], ['en_US'], 0, 'run-a'));
+
+        self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
+        self::assertCount(1, $this->dispatched);
+        $postponed = $this->dispatched[0]->getMessage();
+        self::assertInstanceOf(MarkCatalogueIndexed::class, $postponed);
+        self::assertSame('run-a', $postponed->run);
+
+        $tally->count('run-a');
+        $this->handler(waitingMessages: 0)($postponed);
+
+        self::assertTrue($this->indexes->isComplete('brand', 'en_US'));
+        self::assertNull($tally->isComplete('run-a'));
+    }
+
+    public function testTheMarkerOfARunThatALaterOneReplacedMarksNothing(): void
+    {
+        $tally = new RebuildTally($this->indexes);
+        $tally->start('run-b');
+
+        $this->handler(waitingMessages: 0)(new MarkCatalogueIndexed(['brand'], ['en_US'], 0, 'run-a'));
+
+        self::assertFalse($this->indexes->isComplete('brand', 'en_US'));
+        self::assertSame([], $this->dispatched);
+        self::assertCount(1, $this->warnings);
+        self::assertFalse($tally->isComplete('run-b'));
+    }
+
+    public function testABatchOfARunIsCountedWhetherItWasHandledOrFailedForGood(): void
+    {
+        $tally = new RebuildTally($this->indexes);
+        $tally->start('run-a');
+        $tally->expect('run-a', 2);
+        $listener = new RebuildTallyListener($tally, new NullLogger());
+        $batch = new Envelope(new IndexDocument('brand', [1]), [new RebuildRunStamp('run-a')]);
+
+        $listener->countHandledBatch(new WorkerMessageHandledEvent(new Envelope(new IndexDocument('brand', [2])), SearchReindexCommand::QUEUE_TRANSPORT));
+        $listener->countHandledBatch(new WorkerMessageHandledEvent(new Envelope(new IndexDocument('brand', [3]), [new RebuildRunStamp('run-z')]), SearchReindexCommand::QUEUE_TRANSPORT));
+        $retried = new WorkerMessageFailedEvent($batch, SearchReindexCommand::QUEUE_TRANSPORT, new \RuntimeException());
+        $retried->setForRetry();
+        $listener->countFailedBatch($retried);
+
+        self::assertFalse($tally->isComplete('run-a'));
+
+        $listener->countHandledBatch(new WorkerMessageHandledEvent($batch, SearchReindexCommand::QUEUE_TRANSPORT));
+
+        self::assertFalse($tally->isComplete('run-a'));
+
+        $listener->countFailedBatch(new WorkerMessageFailedEvent($batch, SearchReindexCommand::QUEUE_TRANSPORT, new \RuntimeException()));
+
+        self::assertTrue($tally->isComplete('run-a'));
     }
 
     public function testTheMarkerGivesUpWithoutMarkingAfterTooManyChecks(): void
@@ -209,6 +274,7 @@ final class MarkCatalogueIndexedHandlerTest extends IntegrationTestCase
                     $this->warnings[] = (string) $message;
                 }
             },
+            new RebuildTally($this->indexes),
         );
     }
 }

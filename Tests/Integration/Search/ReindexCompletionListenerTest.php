@@ -13,8 +13,12 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Event\SendMessageToTransportsEvent;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\TransportNamesStamp;
+use Symfony\Component\Messenger\Transport\Sender\SenderInterface;
+use Thelia\Command\SearchReindexCommand;
+use Thelia\Domain\Search\Message\IndexDocument;
 use Thelia\Domain\Search\Provider\CategoryDocumentProvider;
 use Thelia\Domain\Search\SearchDocumentProviders;
 use Thelia\Domain\Search\SearchLocales;
@@ -23,6 +27,8 @@ use TntSearch\EventListener\ReindexCompletionListener;
 use TntSearch\Search\CatalogueCompletion;
 use TntSearch\Search\DocumentIndexes;
 use TntSearch\Search\Message\MarkCatalogueIndexed;
+use TntSearch\Search\Message\RebuildRunStamp;
+use TntSearch\Search\RebuildTally;
 use TntSearch\Search\SearchMemo;
 use TntSearch\TntSearch;
 
@@ -64,14 +70,43 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
         self::assertFalse($this->indexes->isComplete('category', 'fr_FR'));
     }
 
-    public function testAQueuedReindexIsMarkedCompleteByAMessageQueuedAfterItsBatches(): void
+    public function testAQueuedReindexTellsItsMarkerHowManyBatchesItQueued(): void
     {
-        $this->listener()->onReindexEnd($this->terminate(['--queue' => true], Command::SUCCESS));
+        $listener = $this->listener('doctrine://default');
+        $listener->onReindexStart(new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input(['--queue' => true]), new NullOutput()));
+        $batches = [
+            $this->send($listener, new IndexDocument('category', [1, 2]), SearchReindexCommand::QUEUE_TRANSPORT),
+            $this->send($listener, new IndexDocument('category', [3]), SearchReindexCommand::QUEUE_TRANSPORT),
+        ];
+        $everyday = $this->send($listener, new IndexDocument('category', [4]), 'async');
+        $listener->onReindexEnd($this->terminate(['--queue' => true], Command::SUCCESS));
 
         self::assertFalse($this->indexes->isComplete('category', 'fr_FR'));
         self::assertCount(1, $this->dispatched);
-        self::assertInstanceOf(MarkCatalogueIndexed::class, $this->dispatched[0]->getMessage());
+        $marker = $this->dispatched[0]->getMessage();
+        self::assertInstanceOf(MarkCatalogueIndexed::class, $marker);
+        self::assertNotNull($marker->run);
         self::assertSame(['async_heavy'], $this->dispatched[0]->last(TransportNamesStamp::class)?->getTransportNames());
+        self::assertSame([$marker->run, $marker->run], array_map(static fn (Envelope $batch): ?string => $batch->last(RebuildRunStamp::class)?->run, $batches));
+        self::assertNull($everyday->last(RebuildRunStamp::class));
+
+        $tally = new RebuildTally($this->indexes);
+        $tally->count($marker->run);
+        self::assertFalse($tally->isComplete($marker->run));
+        $tally->count($marker->run);
+        self::assertTrue($tally->isComplete($marker->run));
+    }
+
+    public function testAReindexQueuedWithoutAnAsynchronousQueueIsMarkedAtItsEnd(): void
+    {
+        $listener = $this->listener('sync://');
+        $listener->onReindexStart(new ConsoleCommandEvent(new Command('thelia:search:reindex'), $this->input(['--queue' => true, '--family' => ['category'], '--locale' => ['fr_FR']]), new NullOutput()));
+        $batch = $this->send($listener, new IndexDocument('category', [1]), SearchReindexCommand::QUEUE_TRANSPORT);
+        $listener->onReindexEnd($this->terminate(['--queue' => true, '--family' => ['category'], '--locale' => ['fr_FR']], Command::SUCCESS));
+
+        self::assertNull($batch->last(RebuildRunStamp::class));
+        self::assertSame([], $this->dispatched);
+        self::assertTrue($this->indexes->isComplete('category', 'fr_FR'));
     }
 
     public function testAReindexThatStartsLiftsTheFailureOfItsFamiliesSoItsEndCanMarkThem(): void
@@ -88,7 +123,15 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
         self::assertTrue($this->indexes->isComplete('category', 'fr_FR'));
     }
 
-    private function listener(): ReindexCompletionListener
+    private function send(ReindexCompletionListener $listener, object $message, string $transport): Envelope
+    {
+        $event = new SendMessageToTransportsEvent(new Envelope($message), [$transport => $this->createStub(SenderInterface::class)]);
+        $listener->stampQueuedBatch($event);
+
+        return $event->getEnvelope();
+    }
+
+    private function listener(string $dsn = 'doctrine://default'): ReindexCompletionListener
     {
         $dispatched = &$this->dispatched;
 
@@ -108,6 +151,8 @@ final class ReindexCompletionListenerTest extends IntegrationTestCase
                     return $envelope;
                 }
             },
+            new RebuildTally($this->indexes),
+            $dsn,
         );
     }
 

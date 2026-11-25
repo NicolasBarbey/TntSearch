@@ -17,6 +17,7 @@ final readonly class MarkCatalogueIndexed
         public array $families = [],
         public ?array $locales = null,
         public int $postponements = 0,
+        public ?string $run = null,
     ) {
     }
 }
